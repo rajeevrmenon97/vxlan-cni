@@ -15,7 +15,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-var debug bool = true
+var debug bool = false
 
 type Network struct {
 	Name    string `json:"name"`
@@ -104,21 +104,25 @@ func configureVxlan(vxName string, network Network, br *netlink.Bridge) (*netlin
 	return vx, nil
 }
 
-func configureVethPairs(containerNs string, ifName string, IP string, br *netlink.Bridge) error {
+func configureVethPairs(containerNs string, ifName string, ipAddress string, br *netlink.Bridge) (*current.Interface, *current.Interface, error) {
 	netns, err := ns.GetNS(containerNs)
 	if err != nil {
-		return fmt.Errorf("Error while getting container namespace %q: %v", containerNs, err)
+		return nil, nil, fmt.Errorf("Error while getting container namespace %q: %v", containerNs, err)
 	}
 
 	hostIface := &current.Interface{}
+	contIface := &current.Interface{}
+
 	var handler = func(hostNS ns.NetNS) error {
 		hostVeth, containerVeth, err := ip.SetupVeth(ifName, 1500, "", hostNS)
 		if err != nil {
 			return err
 		}
 		hostIface.Name = hostVeth.Name
+		contIface.Name = containerVeth.Name
+		contIface.Sandbox = netns.Path()
 
-		ipv4Addr, ipv4Net, err := net.ParseCIDR(IP)
+		ipv4Addr, ipv4Net, err := net.ParseCIDR(ipAddress)
 		if err != nil {
 			return err
 		}
@@ -143,19 +147,19 @@ func configureVethPairs(containerNs string, ifName string, IP string, br *netlin
 	}
 
 	if err := netns.Do(handler); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	hostVeth, err := netlink.LinkByName(hostIface.Name)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	if err := netlink.LinkSetMaster(hostVeth, br); err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	return nil
+	return hostIface, contIface, err
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
@@ -179,7 +183,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 		cniArgsMap[keyValue[0]] = keyValue[1]
 	}
-	IP, ok := cniArgsMap["IP"]
+	ipAddress, ok := cniArgsMap["IP"]
 	if !ok {
 		return fmt.Errorf("IP Address not provided")
 	}
@@ -199,11 +203,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Configuring the veth pairs
-	err = configureVethPairs(args.Netns, args.IfName, IP, br)
-	if err != nil {
-		return err
-	}
+	_, _, err = configureVethPairs(args.Netns, args.IfName, ipAddress, br)
 
+	fmt.Printf(`{"cniVersion": %q, "interfaces": [{"name": %q}], "ips": [{"interface": 0, "address": %q}]}`, current.ImplementedSpecVersion, args.IfName, ipAddress)
 	return nil
 }
 
@@ -217,4 +219,5 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 func main() {
 	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, "CNI vxlan version 0.1")
+	fmt.Println()
 }
