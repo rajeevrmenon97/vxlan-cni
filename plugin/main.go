@@ -8,7 +8,10 @@ import (
 	"syscall"
 
 	"github.com/containernetworking/cni/pkg/skel"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
+	"github.com/containernetworking/plugins/pkg/ip"
+	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
 )
 
@@ -101,6 +104,60 @@ func configureVxlan(vxName string, network Network, br *netlink.Bridge) (*netlin
 	return vx, nil
 }
 
+func configureVethPairs(containerNs string, ifName string, IP string, br *netlink.Bridge) error {
+	netns, err := ns.GetNS(containerNs)
+	if err != nil {
+		return fmt.Errorf("Error while getting container namespace %q: %v", containerNs, err)
+	}
+
+	hostIface := &current.Interface{}
+	var handler = func(hostNS ns.NetNS) error {
+		hostVeth, containerVeth, err := ip.SetupVeth(ifName, 1500, "", hostNS)
+		if err != nil {
+			return err
+		}
+		hostIface.Name = hostVeth.Name
+
+		ipv4Addr, ipv4Net, err := net.ParseCIDR(IP)
+		if err != nil {
+			return err
+		}
+
+		link, err := netlink.LinkByName(containerVeth.Name)
+		if err != nil {
+			return err
+		}
+
+		ipv4Net.IP = ipv4Addr
+
+		addr := &netlink.Addr{IPNet: ipv4Net, Label: ""}
+		if err = netlink.AddrAdd(link, addr); err != nil {
+			return err
+		}
+
+		if err := netlink.LinkSetUp(link); err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	if err := netns.Do(handler); err != nil {
+		return err
+	}
+
+	hostVeth, err := netlink.LinkByName(hostIface.Name)
+	if err != nil {
+		return err
+	}
+
+	if err := netlink.LinkSetMaster(hostVeth, br); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func cmdAdd(args *skel.CmdArgs) error {
 	if debug {
 		r := strings.NewReplacer("\t", "", "\n", "")
@@ -123,6 +180,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// Configuring the VXLAN interface
 	vxName := "vxlan-" + network.Name
 	_, err = configureVxlan(vxName, network, br)
+	if err != nil {
+		return err
+	}
+
+	// Configuring the veth pairs
+	err = configureVethPairs(args.Netns, args.IfName, args.Args, br)
 	if err != nil {
 		return err
 	}
