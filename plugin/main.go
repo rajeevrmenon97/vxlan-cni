@@ -22,6 +22,85 @@ type Network struct {
 	DstPort int    `json:"dstPort"`
 }
 
+func configureBridge(brName string) (*netlink.Bridge, error) {
+	var br *netlink.Bridge
+	var ok bool
+
+	l, err := netlink.LinkByName(brName)
+	if err == nil {
+		br, ok = l.(*netlink.Bridge)
+		if !ok {
+			return nil, fmt.Errorf("%q already exists but is not a bridge", brName)
+		}
+	} else {
+		if !strings.Contains(err.Error(), "Link not found") {
+			return nil, fmt.Errorf("Error while querying for link: %v", err)
+		}
+
+		br = &netlink.Bridge{
+			LinkAttrs: netlink.LinkAttrs{
+				Name:   brName,
+				MTU:    1500,
+				TxQLen: -1,
+			},
+		}
+
+		err := netlink.LinkAdd(br)
+		if err != nil && err != syscall.EEXIST {
+			return nil, err
+		}
+
+		if err := netlink.LinkSetUp(br); err != nil {
+			return nil, err
+		}
+	}
+	return br, nil
+}
+
+func configureVxlan(vxName string, network Network, br *netlink.Bridge) (*netlink.Vxlan, error) {
+	var vx *netlink.Vxlan
+	var ok bool
+	parentLink, err := netlink.LinkByName(network.Dev)
+	if err != nil {
+		return nil, fmt.Errorf("Error while getting parent interface %q", network.Dev)
+	}
+
+	l, err := netlink.LinkByName(vxName)
+	if err == nil {
+		vx, ok = l.(*netlink.Vxlan)
+		if !ok {
+			return nil, fmt.Errorf("%q already exists but is not a vxlan link", vxName)
+		}
+	} else {
+		if !strings.Contains(err.Error(), "Link not found") {
+			return nil, fmt.Errorf("Error while querying for vxlan link: %v", err)
+		}
+
+		vx = &netlink.Vxlan{
+			LinkAttrs: netlink.LinkAttrs{
+				Name: vxName,
+			},
+			VxlanId:      network.VNI,
+			VtepDevIndex: parentLink.Attrs().Index,
+			Group:        net.ParseIP(network.Group),
+			Port:         network.DstPort,
+		}
+
+		if err := netlink.LinkAdd(vx); err != nil && err != syscall.EEXIST {
+			return nil, err
+		}
+
+		if err := netlink.LinkSetMaster(vx, br); err != nil {
+			return nil, err
+		}
+
+		if err := netlink.LinkSetUp(vx); err != nil {
+			return nil, err
+		}
+	}
+	return vx, nil
+}
+
 func cmdAdd(args *skel.CmdArgs) error {
 	if debug {
 		r := strings.NewReplacer("\t", "", "\n", "")
@@ -36,78 +115,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	// Configuring the bridge interface
 	brName := "br-" + network.Name
-	var br *netlink.Bridge
-	var ok bool
-
-	l, err := netlink.LinkByName(brName)
-	if err == nil {
-		br, ok = l.(*netlink.Bridge)
-		if !ok {
-			return fmt.Errorf("%q already exists but is not a bridge", brName)
-		}
-	} else {
-		if !strings.Contains(err.Error(), "Link not found") {
-			return fmt.Errorf("Error while querying for link: %v", err)
-		}
-
-		br = &netlink.Bridge{
-			LinkAttrs: netlink.LinkAttrs{
-				Name:   brName,
-				MTU:    1500,
-				TxQLen: -1,
-			},
-		}
-
-		err := netlink.LinkAdd(br)
-		if err != nil && err != syscall.EEXIST {
-			return err
-		}
-
-		if err := netlink.LinkSetUp(br); err != nil {
-			return err
-		}
+	br, err := configureBridge(brName)
+	if err != nil {
+		return err
 	}
 
 	// Configuring the VXLAN interface
 	vxName := "vxlan-" + network.Name
-	var vx *netlink.Vxlan
-	parentLink, err := netlink.LinkByName(network.Dev)
+	_, err = configureVxlan(vxName, network, br)
 	if err != nil {
-		return fmt.Errorf("Error while getting parent interface %q", network.Dev)
-	}
-
-	l, err = netlink.LinkByName(vxName)
-	if err == nil {
-		vx, ok = l.(*netlink.Vxlan)
-		if !ok {
-			return fmt.Errorf("%q already exists but is not a vxlan link", brName)
-		}
-	} else {
-		if !strings.Contains(err.Error(), "Link not found") {
-			return fmt.Errorf("Error while querying for vxlan link: %v", err)
-		}
-
-		vx = &netlink.Vxlan{
-			LinkAttrs: netlink.LinkAttrs{
-				Name: vxName,
-			},
-			VxlanId:      network.VNI,
-			VtepDevIndex: parentLink.Attrs().Index,
-			Group:        net.ParseIP(network.Group),
-			Port:         network.DstPort,
-		}
-
-		if err := netlink.LinkAdd(vx); err != nil && err != syscall.EEXIST {
-			return err
-		}
-
-		if err := netlink.LinkSetMaster(vx, br); err != nil {
-			return err
-		}
-
-		if err := netlink.LinkSetUp(vx); err != nil {
-			return err
-		}
+		return err
 	}
 
 	return nil
