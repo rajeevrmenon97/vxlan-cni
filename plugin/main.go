@@ -170,6 +170,20 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
+	cniArgsPairs := strings.Split(args.Args, ";")
+	cniArgsMap := make(map[string]string)
+	for _, pair := range cniArgsPairs {
+		keyValue := strings.Split(pair, "=")
+		if len(keyValue) != 2 {
+			panic("Invalid CNI_ARGS pair")
+		}
+		cniArgsMap[keyValue[0]] = keyValue[1]
+	}
+	IP, ok := cniArgsMap["IP"]
+	if !ok {
+		return fmt.Errorf("IP Address not provided")
+	}
+
 	// Configuring the bridge interface
 	brName := "br-" + network.Name
 	br, err := configureBridge(brName)
@@ -185,7 +199,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Configuring the veth pairs
-	err = configureVethPairs(args.Netns, args.IfName, args.Args, br)
+	err = configureVethPairs(args.Netns, args.IfName, IP, br)
 	if err != nil {
 		return err
 	}
