@@ -236,6 +236,80 @@ func cmdAdd(args *skel.CmdArgs) error {
 }
 
 func cmdDel(args *skel.CmdArgs) error {
+	network := Network{}
+	if err := json.Unmarshal(args.StdinData, &network); err != nil {
+		return err
+	}
+
+	err := ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
+		var err error
+		_, err = ip.DelLinkByNameAddr(args.IfName)
+		if err != nil && err == ip.ErrLinkNotFound {
+			return nil
+		}
+		return err
+	})
+
+	if err != nil {
+		_, ok := err.(ns.NSPathNotExistErr)
+		if !ok {
+			return err
+		}
+	}
+
+	brName := "br-" + network.Name
+	l, err := netlink.LinkByName(brName)
+	if err != nil {
+		return nil
+	}
+
+	br, ok := l.(*netlink.Bridge)
+	if !ok {
+		return nil
+	}
+
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil
+	}
+
+	for _, link := range links {
+		if link.Type() == "veth" {
+			if link.Attrs().MasterIndex == br.Attrs().Index {
+				return nil
+			}
+		}
+	}
+
+	vxName := "vxlan-" + network.Name
+	l, err = netlink.LinkByName(vxName)
+	if err != nil {
+		return nil
+	}
+
+	vx, ok := l.(*netlink.Vxlan)
+	if !ok {
+		return nil
+	}
+
+	err = netlink.LinkDel(vx)
+	if err != nil {
+		return nil
+	}
+
+	netlink.LinkDel(br)
+
+	ipt, err := iptables.New()
+	if err != nil {
+		return err
+	}
+
+	ruleSpec := []string{"-s", network.CIDR, "-j", "ACCEPT"}
+	_ = ipt.DeleteIfExists("filter", "FORWARD", ruleSpec...)
+
+	ruleSpec = []string{"-d", network.CIDR, "-j", "ACCEPT"}
+	_ = ipt.DeleteIfExists("filter", "FORWARD", ruleSpec...)
+
 	return nil
 }
 
