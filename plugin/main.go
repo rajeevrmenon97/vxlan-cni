@@ -12,6 +12,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -23,9 +24,11 @@ type Network struct {
 	VNI     int    `json:"vni"`
 	Group   string `json:"group"`
 	DstPort int    `json:"dstPort"`
+	CIDR    string `json:"cidr"`
 }
 
-func configureBridge(brName string) (*netlink.Bridge, error) {
+func configureBridge(network Network) (*netlink.Bridge, error) {
+	brName := "br-" + network.Name
 	var br *netlink.Bridge
 	var ok bool
 
@@ -56,11 +59,16 @@ func configureBridge(brName string) (*netlink.Bridge, error) {
 		if err := netlink.LinkSetUp(br); err != nil {
 			return nil, err
 		}
+
+		if err := addIptableForward(network); err != nil {
+			return nil, err
+		}
 	}
 	return br, nil
 }
 
-func configureVxlan(vxName string, network Network, br *netlink.Bridge) (*netlink.Vxlan, error) {
+func configureVxlan(network Network, br *netlink.Bridge) (*netlink.Vxlan, error) {
+	vxName := "vxlan-" + network.Name
 	var vx *netlink.Vxlan
 	var ok bool
 	parentLink, err := netlink.LinkByName(network.Dev)
@@ -162,6 +170,26 @@ func configureVethPairs(containerNs string, ifName string, ipAddress string, br 
 	return hostIface, contIface, err
 }
 
+func addIptableForward(network Network) error {
+	ipt, err := iptables.New()
+	if err != nil {
+		return err
+	}
+
+	ruleSpec := []string{"-s", network.CIDR, "-j", "ACCEPT"}
+	err = ipt.AppendUnique("filter", "FORWARD", ruleSpec...)
+	if err != nil {
+		return err
+	}
+
+	ruleSpec = []string{"-d", network.CIDR, "-j", "ACCEPT"}
+	err = ipt.AppendUnique("filter", "FORWARD", ruleSpec...)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func cmdAdd(args *skel.CmdArgs) error {
 	if debug {
 		r := strings.NewReplacer("\t", "", "\n", "")
@@ -189,15 +217,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Configuring the bridge interface
-	brName := "br-" + network.Name
-	br, err := configureBridge(brName)
+	br, err := configureBridge(network)
 	if err != nil {
 		return err
 	}
 
 	// Configuring the VXLAN interface
-	vxName := "vxlan-" + network.Name
-	_, err = configureVxlan(vxName, network, br)
+	_, err = configureVxlan(network, br)
 	if err != nil {
 		return err
 	}
