@@ -19,18 +19,31 @@ spec:
         effect: NoSchedule
       hostNetwork: true
       containers:
-      - name: vxlan-cni-bianry
+      - name: vxlan-cni-binary
         image: rajeevrmenon97/vxlan-cni:latest
         imagePullPolicy: Always
         volumeMounts:
         - name: cni-dir
           mountPath: /host/opt/cni/bin
         command:
-        - /bin/sh
-        - -c
-        - |
-          cp /opt/cni/bin/vxlan /host/opt/cni/bin
-          exec sleep infinity
+          - /bin/sh
+          - "-c"
+          - "sleep infinity"
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                cp /opt/cni/bin/vxlan /host/opt/cni/bin/
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                rm /host/opt/cni/bin/vxlan
       volumes:
       - name: cni-dir
         hostPath:
