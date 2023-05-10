@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vxlan-cni-ds
+  namespace: kube-system
+  labels:
+    app: vxlan-cni
+spec:
+  selector:
+    matchLabels:
+      app: vxlan-cni
+  template:
+    metadata:
+      labels:
+        app: vxlan-cni
+    spec:
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      hostNetwork: true
+      containers:
+      - name: vxlan-cni-bianry
+        image: rajeevrmenon97/vxlan-cni:latest
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: cni-dir
+          mountPath: /host/opt/cni/bin
+        command:
+        - /bin/sh
+        - -c
+        - |
+          cp /opt/cni/bin/vxlan /host/opt/cni/bin
+          exec sleep infinity
+      volumes:
+      - name: cni-dir
+        hostPath:
+          path: /opt/cni/bin
